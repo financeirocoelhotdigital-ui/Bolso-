@@ -19,11 +19,13 @@ Os arquivos do projeto já estão **100% configurados e prontos** para deploy di
 2. Acesse [vercel.com](https://vercel.com) e faça login.
 3. Clique em **"Add New..."** ➔ **"Project"**.
 4. Importe o repositório do seu GitHub.
-5. Em **Framework Preset**, a Vercel detectará automaticamente **Vite**.
-6. Em **Environment Variables (Variáveis de Ambiente)**, adicione:
+5. **Project Name (Nome do Projeto):** A Vercel costuma sugerir o nome da pasta ou branch (ex: `bolso-main`). **Altere o campo "Project Name" para `bolso-plus`** (assim seu domínio será `https://bolso-plus.vercel.app` em vez de `bolso-main`).
+   > *Se você já criou o projeto com o nome `bolso-main`, basta ir em **Settings ➔ General ➔ Project Name**, alterar para `bolso-plus` e clicar em **Save**.*
+6. Em **Framework Preset**, a Vercel detectará automaticamente **Vite**.
+7. Em **Environment Variables (Variáveis de Ambiente)**, adicione:
    - `GEMINI_API_KEY`: Sua chave de API do Google Gemini (para as funções de IA).
    - `ADMIN_EMAIL`: `dicasdereceitas1993@gmail.com`
-7. Clique em **Deploy**! Em menos de 1 minuto seu app estará no ar com link `https://seu-projeto.vercel.app`.
+8. Clique em **Deploy**! Em menos de 1 minuto seu app estará no ar com link `https://bolso-plus.vercel.app`.
 
 ---
 

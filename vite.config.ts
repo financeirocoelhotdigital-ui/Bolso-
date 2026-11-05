@@ -34,11 +34,11 @@ export default defineConfig(({mode}) => {
           ]
         },
         manifest: {
-          name: 'FinAssist',
-          short_name: 'FinAssist',
-          description: 'Seu assistente financeiro pessoal com IA',
-          theme_color: '#13111C',
-          background_color: '#F9FAFB',
+          name: 'Bolso+',
+          short_name: 'Bolso+',
+          description: 'Bolso+ — Sistema Inteligente de Gestão Financeira & IA',
+          theme_color: '#064E3B',
+          background_color: '#F4F7F6',
           icons: [
             {
               src: '/icon.png',
