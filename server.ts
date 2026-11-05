@@ -10,7 +10,21 @@ dotenv.config();
 
 const ADMIN_EMAIL = "dicasdereceitas1993@gmail.com";
 
-const USERS_FILE = path.join(process.cwd(), "usuarios.json");
+function getFilePath(filename: string): string {
+  if (process.env.VERCEL) {
+    const tmpPath = path.join("/tmp", filename);
+    const localPath = path.join(process.cwd(), filename);
+    if (!fs.existsSync(tmpPath) && fs.existsSync(localPath)) {
+      try {
+        fs.copyFileSync(localPath, tmpPath);
+      } catch (e) {}
+    }
+    return tmpPath;
+  }
+  return path.join(process.cwd(), filename);
+}
+
+const USERS_FILE = getFilePath("usuarios.json");
 
 function loadLocalUsers(): any[] {
   try {
@@ -49,8 +63,8 @@ function deleteLocalUser(uid: string) {
   saveLocalUsers(filtered);
 }
 
-const ANNOUNCEMENTS_FILE = path.join(process.cwd(), "anuncios.json");
-const SETTINGS_FILE = path.join(process.cwd(), "config-sistema.json");
+const ANNOUNCEMENTS_FILE = getFilePath("anuncios.json");
+const SETTINGS_FILE = getFilePath("config-sistema.json");
 
 function loadLocalAnnouncements(): any[] {
   try {
@@ -154,11 +168,8 @@ if (!getApps().length) {
   }
 }
 
-async function startServer() {
-  const app = express();
-  const PORT = 3000;
-
-  app.use(express.json({ limit: "20mb" }));
+export const app = express();
+app.use(express.json({ limit: "20mb" }));
 
   // Middleware to verify Admin Authorization
   const verifyAdmin = (req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -1187,6 +1198,15 @@ async function startServer() {
     res.status(404).json({ error: "Endpoint da API não encontrado.", path: req.originalUrl });
   });
 
+export default app;
+
+async function startServer() {
+  if (process.env.VERCEL) {
+    return;
+  }
+
+  const PORT = Number(process.env.PORT) || 3000;
+
   // Vite middleware for development vs static serve for production
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -1207,5 +1227,7 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
 
