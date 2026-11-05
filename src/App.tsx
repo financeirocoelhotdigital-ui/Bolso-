@@ -608,7 +608,13 @@ function AppContent() {
   }, [installments, debts, settings.notificationsEnabled]);
 
   useEffect(() => {
+    // Safety fallback timer to prevent indefinite loading on initial visit
+    const safetyTimer = setTimeout(() => {
+      setLoading(false);
+    }, 2500);
+
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      clearTimeout(safetyTimer);
       if (currentUser) {
         setUser(currentUser);
         try {
@@ -670,7 +676,10 @@ function AppContent() {
       }
       setLoading(false);
     });
-    return () => unsubscribe();
+    return () => {
+      clearTimeout(safetyTimer);
+      unsubscribe();
+    };
   }, []);
 
   const handleOnboardingComplete = (data: any) => {
@@ -751,10 +760,14 @@ function AppContent() {
     navigate("/login", { replace: true });
   };
 
-  if (loading || (user && !userProfile)) {
+  if (loading) {
     return (
-      <div className="flex h-screen items-center justify-center bg-white">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-blue-600 border-t-transparent"></div>
+      <div className="flex h-screen flex-col items-center justify-center bg-[#F4F7F6] gap-3">
+        <div className="w-16 h-16 rounded-3xl bg-white p-2.5 shadow-md flex items-center justify-center border border-slate-100">
+          <img src="/logo.png" alt="Bolso+" className="w-full h-full object-contain" />
+        </div>
+        <div className="h-6 w-6 animate-spin rounded-full border-3 border-emerald-600 border-t-transparent mt-1"></div>
+        <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Carregando Bolso+...</span>
       </div>
     );
   }

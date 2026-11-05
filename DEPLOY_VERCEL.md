@@ -2,6 +2,13 @@
 
 Os arquivos do projeto já estão **100% configurados e prontos** para deploy direto na Vercel com suporte completo para a aplicação React/Vite (Frontend SPA) e as funções de API/IA (Backend Serverless).
 
+### 🩺 Correção da "Tela Branca" no Deploy:
+Identificamos e corrigimos as 4 causas que provocavam a tela branca na Vercel:
+1. **Dependência circular no Rollup (`vendor` ➔ `react-vendor` ➔ `vendor`):** O `vite.config.ts` anterior dividia pedaços do React e bibliotecas de forma que o navegador tentava carregar variáveis do React antes de inicializá-las. Removemos o particionamento manual incorreto, garantindo carregamento 100% limpo.
+2. **Reescrita incorreta de assets no `vercel.json`:** Ajustamos o regex do rewrite (`/((?!assets/|.*\\..*).*)`) para que arquivos `.js` e `.css` nunca sejam redirecionados para o HTML (o que causava erro de MIME type no navegador).
+3. **Resiliência do Firebase:** O Firebase agora possui fallbacks caso o navegador restrinja IndexedDB ou cache de abas.
+4. **Timeout de carregamento e ErrorBoundary:** Adicionado timeout de 2.5s no `App.tsx` e tela de carregamento visual no `index.html` para impedir que a tela fique branca enquanto conecta à nuvem.
+
 ---
 
 ## 📁 Arquivos de Configuração Inclusos
