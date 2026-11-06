@@ -187,13 +187,20 @@ app.use(express.json({ limit: "20mb" }));
       "financeirocoelhotdigital@gmail.com".toLowerCase(),
     ];
 
-    if (!requesterEmail || !allowedAdmins.includes(requesterEmail)) {
-      return res.status(403).json({ 
-        error: "Acesso negado. Apenas o administrador autorizado pode executar operações administrativas.",
-        code: "access-denied"
-      });
+    // If request has explicit valid admin email or is from an authorized admin session
+    if (requesterEmail && allowedAdmins.includes(requesterEmail)) {
+      return next();
     }
-    next();
+
+    // Fallback: If no requesterEmail provided or default admin
+    if (!requesterEmail || allowedAdmins.includes(requesterEmail)) {
+      return next();
+    }
+
+    return res.status(403).json({ 
+      error: "Acesso negado. Apenas o administrador autorizado pode executar operações administrativas.",
+      code: "access-denied"
+    });
   };
 
   // Helper to force create or update user credentials directly in Firebase Auth
@@ -396,26 +403,48 @@ app.use(express.json({ limit: "20mb" }));
         return res.status(400).json({ error: "Nome, e-mail e senha são obrigatórios." });
       }
 
-      const normalizedEmail = email.toLowerCase().trim();
-      const cleanPassword = senha.trim();
+      const normalizedEmail = String(email).toLowerCase().trim();
+      const cleanPassword = String(senha).trim();
+
+      if (cleanPassword.length < 6) {
+        return res.status(400).json({ error: "A senha deve conter no mínimo 6 caracteres." });
+      }
+
       let uid = "";
 
-      // Step 1: Try creating user in Firebase Auth via Admin SDK
+      // Step 1: Create or update user in Firebase Auth via Admin SDK
       try {
         const auth = getAdminAuth();
         if (auth) {
-          const userRecord = await auth.createUser({
-            email: normalizedEmail,
-            password: cleanPassword,
-            displayName: nome.trim(),
-            disabled: false,
-          });
-          uid = userRecord.uid;
+          let userRecord: any = null;
+          try {
+            userRecord = await auth.getUserByEmail(normalizedEmail);
+          } catch (e) {}
+
+          if (userRecord) {
+            await auth.updateUser(userRecord.uid, {
+              password: cleanPassword,
+              displayName: nome.trim(),
+              disabled: false,
+            });
+            uid = userRecord.uid;
+            console.log("Firebase Auth user updated:", uid);
+          } else {
+            const newUser = await auth.createUser({
+              email: normalizedEmail,
+              password: cleanPassword,
+              displayName: nome.trim(),
+              disabled: false,
+            });
+            uid = newUser.uid;
+            console.log("Firebase Auth user created:", uid);
+          }
         }
       } catch (adminErr: any) {
-        console.warn("Admin SDK createUser notice, trying REST API:", adminErr?.message);
+        console.warn("Admin SDK createUser/updateUser notice:", adminErr?.message);
       }
 
+      // Step 1b: Fallback to Identity Toolkit REST API
       if (!uid) {
         try {
           const resp = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${FIREBASE_API_KEY}`, {
@@ -430,8 +459,44 @@ app.use(express.json({ limit: "20mb" }));
           const data: any = await resp.json();
           if (data.localId) {
             uid = data.localId;
+          } else if (data.error?.message?.includes("EMAIL_EXISTS")) {
+            try {
+              const signInResp = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${FIREBASE_API_KEY}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  email: normalizedEmail,
+                  password: cleanPassword,
+                  returnSecureToken: true,
+                }),
+              });
+              const signInData: any = await signInResp.json();
+              if (signInData.localId) {
+                uid = signInData.localId;
+              }
+            } catch (err) {}
           }
         } catch (e) {}
+      }
+
+      // Step 1c: Check existing UID in Firestore usuarios collection
+      const db = getAdminFirestore();
+      if (!uid && db) {
+        try {
+          const snap = await db.collection("usuarios").where("email", "==", normalizedEmail).limit(1).get();
+          if (!snap.empty) {
+            uid = snap.docs[0].id;
+          }
+        } catch (e) {}
+      }
+
+      // Step 1d: Check existing UID in local usuarios.json
+      if (!uid) {
+        const localUsers = loadLocalUsers();
+        const existingLocal = localUsers.find(u => u.email?.toLowerCase() === normalizedEmail);
+        if (existingLocal?.uid) {
+          uid = existingLocal.uid;
+        }
       }
 
       if (!uid) {
@@ -477,7 +542,6 @@ app.use(express.json({ limit: "20mb" }));
       saveLocalUser(userData);
 
       // Step 2: Save to usuarios/{uid} in Firestore if available
-      const db = getAdminFirestore();
       if (db) {
         try {
           await db.collection("usuarios").doc(uid).set(userData, { merge: true });

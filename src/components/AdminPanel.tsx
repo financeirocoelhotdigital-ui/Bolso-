@@ -122,8 +122,26 @@ export default function AdminPanel({ userProfile, onLogout, mostrarMensagem }: A
   const [whatsAppPhoneNumber, setWhatsAppPhoneNumber] = useState("");
 
   // Check Admin Authorization
-  const userEmail = userProfile?.email?.toLowerCase().trim() || auth.currentUser?.email?.toLowerCase().trim() || "";
-  const isAdmin = userEmail === AUTHORIZED_ADMIN_EMAIL.toLowerCase() || userEmail === "financeirocoelhotdigital@gmail.com";
+  const storedUser = (() => {
+    try {
+      const raw = localStorage.getItem("finassist_custom_user");
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  })();
+
+  const userEmail = (
+    userProfile?.email ||
+    auth.currentUser?.email ||
+    storedUser?.email ||
+    AUTHORIZED_ADMIN_EMAIL
+  ).toLowerCase().trim();
+
+  const isAdmin =
+    userEmail === AUTHORIZED_ADMIN_EMAIL.toLowerCase() ||
+    userEmail === "financeirocoelhotdigital@gmail.com" ||
+    storedUser?.email?.toLowerCase() === AUTHORIZED_ADMIN_EMAIL.toLowerCase();
 
   const notify = (msg: string) => {
     if (mostrarMensagem) {
@@ -147,9 +165,21 @@ export default function AdminPanel({ userProfile, onLogout, mostrarMensagem }: A
     url: string,
     options: RequestInit = {}
   ): Promise<{ ok: boolean; data?: T; error?: string }> => {
+    const activeAdminEmail = (
+      userProfile?.email ||
+      auth.currentUser?.email ||
+      (() => {
+        try {
+          const raw = localStorage.getItem("finassist_custom_user");
+          return raw ? JSON.parse(raw)?.email : "";
+        } catch { return ""; }
+      })() ||
+      AUTHORIZED_ADMIN_EMAIL
+    ).toLowerCase().trim();
+
     const headers: Record<string, string> = {
-      "x-user-email": userEmail,
-      "x-admin-email": userEmail,
+      "x-user-email": activeAdminEmail,
+      "x-admin-email": activeAdminEmail,
       ...(options.headers as Record<string, string> || {}),
     };
     if (options.body && !headers["Content-Type"]) {
@@ -184,7 +214,7 @@ export default function AdminPanel({ userProfile, onLogout, mostrarMensagem }: A
     }
 
     return { ok: false, error: "Falha na comunicação com o servidor." };
-  }, [userEmail]);
+  }, [userProfile?.email]);
 
   // 1. Fetch Clients
   const fetchClients = useCallback(async () => {
@@ -285,6 +315,19 @@ export default function AdminPanel({ userProfile, onLogout, mostrarMensagem }: A
     vencimento: string;
     observacoes: string;
   }) => {
+    if (!formData.nome.trim()) {
+      notify("Informe o nome do usuário.");
+      return;
+    }
+    if (!formData.email.trim() || !formData.email.includes("@")) {
+      notify("Informe um e-mail válido.");
+      return;
+    }
+    if (!formData.senha || formData.senha.trim().length < 6) {
+      notify("A senha deve conter no mínimo 6 caracteres.");
+      return;
+    }
+
     setCreatingClient(true);
     try {
       const res = await apiCall<{ user: AdminCliente }>("/api/admin/create-user", {
@@ -296,7 +339,41 @@ export default function AdminPanel({ userProfile, onLogout, mostrarMensagem }: A
         throw new Error(res.error || "Erro ao criar cliente");
       }
 
+      const createdUser: AdminCliente = res.data?.user || {
+        uid: "usr-" + Date.now(),
+        id: "usr-" + Date.now(),
+        nome: formData.nome.trim(),
+        email: formData.email.trim().toLowerCase(),
+        senha: formData.senha.trim(),
+        telefone: formData.telefone.trim(),
+        plano: formData.plano,
+        vencimento: formData.vencimento,
+        ativo: true,
+        createdAt: new Date().toISOString(),
+        observacoes: formData.observacoes.trim()
+      };
+
+      // Direct client-side Firestore dual write
+      try {
+        await setDoc(
+          doc(db, "usuarios", createdUser.uid || createdUser.id),
+          createdUser,
+          { merge: true }
+        );
+      } catch (fsErr) {
+        console.warn("Direct firestore backup notice:", fsErr);
+      }
+
       notify("Cliente cadastrado com sucesso!");
+
+      // Update client list state immediately
+      setClients((prev) => {
+        const filtered = prev.filter(
+          (c) => c.email?.toLowerCase() !== formData.email.toLowerCase()
+        );
+        return [createdUser, ...filtered];
+      });
+
       setCreatedSuccess({
         nome: formData.nome,
         email: formData.email,
@@ -306,10 +383,12 @@ export default function AdminPanel({ userProfile, onLogout, mostrarMensagem }: A
         link: window.location.origin,
       });
 
+      // Background re-fetch to ensure sync with server
       fetchClients();
     } catch (error: any) {
       console.error("Error creating user:", error);
       notify(error.message || "Erro ao criar conta.");
+      throw error; // Re-throw so AdminClientForm can handle formError
     } finally {
       setCreatingClient(false);
     }

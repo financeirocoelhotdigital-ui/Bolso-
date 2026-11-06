@@ -43,6 +43,7 @@ export default function AdminClientForm({ onSubmit, creating }: AdminClientFormP
   const [observacoes, setObservacoes] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [copiedPass, setCopiedPass] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
 
   const handleValidadeTipoChange = (tipo: "vitalicio" | "1ano" | "6meses" | "30dias" | "custom") => {
     setValidadeTipo(tipo);
@@ -86,6 +87,7 @@ export default function AdminClientForm({ onSubmit, creating }: AdminClientFormP
     setSenha(p);
     setShowPassword(true);
     setCopiedPass(false);
+    setFormError(null);
   };
 
   const copyPassword = () => {
@@ -98,15 +100,42 @@ export default function AdminClientForm({ onSubmit, creating }: AdminClientFormP
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    await onSubmit({
-      nome: nome.trim(),
-      email: email.trim().toLowerCase(),
-      senha: senha.trim(),
-      telefone: telefone.trim(),
-      plano: validadeTipo === "vitalicio" ? "vitalicio" : "ativo",
-      vencimento: vencimento ? new Date(vencimento).toISOString() : "",
-      observacoes: observacoes.trim(),
-    });
+    setFormError(null);
+
+    if (!nome.trim()) {
+      setFormError("Por favor, preencha o nome completo do usuário.");
+      return;
+    }
+    if (!email.trim() || !email.includes("@")) {
+      setFormError("Por favor, insira um e-mail válido.");
+      return;
+    }
+    if (senha.trim().length < 6) {
+      setFormError("A senha deve conter no mínimo 6 caracteres para garantir o acesso.");
+      return;
+    }
+
+    try {
+      await onSubmit({
+        nome: nome.trim(),
+        email: email.trim().toLowerCase(),
+        senha: senha.trim(),
+        telefone: telefone.trim(),
+        plano: validadeTipo === "vitalicio" ? "vitalicio" : "ativo",
+        vencimento: vencimento ? new Date(vencimento).toISOString() : "",
+        observacoes: observacoes.trim(),
+      });
+
+      // Clear inputs upon successful creation
+      setNome("");
+      setEmail("");
+      setSenha("");
+      setTelefone("");
+      setObservacoes("");
+      setFormError(null);
+    } catch (err: any) {
+      setFormError(err.message || "Erro ao cadastrar usuário. Verifique os dados.");
+    }
   };
 
   return (
@@ -185,9 +214,24 @@ export default function AdminClientForm({ onSubmit, creating }: AdminClientFormP
             {/* Senha */}
             <div className="md:col-span-2">
               <div className="flex items-center justify-between mb-1.5">
-                <label className="text-xs font-bold text-slate-700">
-                  Senha Inicial de Acesso <span className="text-rose-500">*</span>
-                </label>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs font-bold text-slate-700">
+                    Senha Inicial de Acesso <span className="text-rose-500">*</span>
+                  </label>
+                  {senha.length > 0 && (
+                    <span
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${
+                        senha.length >= 6
+                          ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                          : "bg-rose-50 text-rose-700 border border-rose-200"
+                      }`}
+                    >
+                      {senha.length >= 6
+                        ? "Senha válida"
+                        : `Mínimo 6 caracteres (faltam ${6 - senha.length})`}
+                    </span>
+                  )}
+                </div>
                 <button
                   type="button"
                   onClick={handleGeneratePassword}
@@ -204,7 +248,10 @@ export default function AdminClientForm({ onSubmit, creating }: AdminClientFormP
                   required
                   placeholder="Mínimo 6 caracteres"
                   value={senha}
-                  onChange={(e) => setSenha(e.target.value)}
+                  onChange={(e) => {
+                    setSenha(e.target.value);
+                    if (formError) setFormError(null);
+                  }}
                   className="w-full pl-10 pr-24 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all placeholder:text-slate-400 font-mono"
                 />
                 <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
@@ -296,6 +343,14 @@ export default function AdminClientForm({ onSubmit, creating }: AdminClientFormP
             ></textarea>
           </div>
 
+          {/* Error Banner */}
+          {formError && (
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 flex items-center gap-2">
+              <span className="font-bold">Atenção:</span>
+              <span>{formError}</span>
+            </div>
+          )}
+
           {/* Submit Button */}
           <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
             <button
@@ -303,7 +358,7 @@ export default function AdminClientForm({ onSubmit, creating }: AdminClientFormP
               disabled={creating}
               className="px-6 py-2.5 bg-[#10B981] hover:bg-[#059669] text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-sm transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
             >
-              <UserPlus size={16} strokeWidth={2.5} />
+              <UserPlus size={16} strokeWidth={2.5} className={creating ? "animate-spin" : ""} />
               <span>{creating ? "Cadastrando Usuário..." : "Cadastrar Usuário"}</span>
             </button>
           </div>
