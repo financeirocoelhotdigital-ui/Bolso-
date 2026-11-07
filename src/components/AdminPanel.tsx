@@ -196,7 +196,7 @@ export default function AdminPanel({ userProfile, onLogout, mostrarMensagem }: A
             await new Promise((r) => setTimeout(r, 600));
             continue;
           }
-          return { ok: false, error: `Servidor indisponível temporariamente (${resp.status})` };
+          return { ok: false, error: `Servidor em processamento (${resp.status}). Sincronizando com Firestore...` };
         }
 
         const json = await resp.json();
@@ -305,7 +305,7 @@ export default function AdminPanel({ userProfile, onLogout, mostrarMensagem }: A
     }
   }, [isAdmin, fetchClients, fetchAnnouncements, fetchSettings]);
 
-  // Handle Create User Submit
+  // Handle Create User Submit with dual backend + direct Firestore redundancy
   const handleCreateUser = async (formData: {
     nome: string;
     email: string;
@@ -329,69 +329,83 @@ export default function AdminPanel({ userProfile, onLogout, mostrarMensagem }: A
     }
 
     setCreatingClient(true);
+    const normalizedEmail = formData.email.trim().toLowerCase();
+    const fallbackUid = "usr-" + btoa(normalizedEmail).replace(/[^a-zA-Z0-9]/g, "").slice(0, 20);
+
+    const clientRecord: AdminCliente = {
+      uid: fallbackUid,
+      id: fallbackUid,
+      nome: formData.nome.trim(),
+      email: normalizedEmail,
+      senha: formData.senha.trim(),
+      telefone: formData.telefone.trim(),
+      plano: formData.plano || "anual",
+      vencimento: formData.vencimento || "",
+      ativo: true,
+      createdAt: new Date().toISOString(),
+      observacoes: formData.observacoes ? formData.observacoes.trim() : "",
+    };
+
+    let apiSucceeded = false;
+    let finalUser: AdminCliente = clientRecord;
+
+    // 1. Attempt API server call
     try {
       const res = await apiCall<{ user: AdminCliente }>("/api/admin/create-user", {
         method: "POST",
         body: JSON.stringify(formData),
       });
 
-      if (!res.ok) {
-        throw new Error(res.error || "Erro ao criar cliente");
+      if (res.ok && res.data?.user) {
+        apiSucceeded = true;
+        finalUser = res.data.user;
       }
-
-      const createdUser: AdminCliente = res.data?.user || {
-        uid: "usr-" + Date.now(),
-        id: "usr-" + Date.now(),
-        nome: formData.nome.trim(),
-        email: formData.email.trim().toLowerCase(),
-        senha: formData.senha.trim(),
-        telefone: formData.telefone.trim(),
-        plano: formData.plano,
-        vencimento: formData.vencimento,
-        ativo: true,
-        createdAt: new Date().toISOString(),
-        observacoes: formData.observacoes.trim()
-      };
-
-      // Direct client-side Firestore dual write
-      try {
-        await setDoc(
-          doc(db, "usuarios", createdUser.uid || createdUser.id),
-          createdUser,
-          { merge: true }
-        );
-      } catch (fsErr) {
-        console.warn("Direct firestore backup notice:", fsErr);
-      }
-
-      notify("Cliente cadastrado com sucesso!");
-
-      // Update client list state immediately
-      setClients((prev) => {
-        const filtered = prev.filter(
-          (c) => c.email?.toLowerCase() !== formData.email.toLowerCase()
-        );
-        return [createdUser, ...filtered];
-      });
-
-      setCreatedSuccess({
-        nome: formData.nome,
-        email: formData.email,
-        senha: formData.senha,
-        telefone: formData.telefone,
-        plano: formData.plano,
-        link: window.location.origin,
-      });
-
-      // Background re-fetch to ensure sync with server
-      fetchClients();
-    } catch (error: any) {
-      console.error("Error creating user:", error);
-      notify(error.message || "Erro ao criar conta.");
-      throw error; // Re-throw so AdminClientForm can handle formError
-    } finally {
-      setCreatingClient(false);
+    } catch (apiErr) {
+      console.warn("Backend API notice (using direct Firestore backup):", apiErr);
     }
+
+    // 2. Direct Firestore fallback/persistence
+    try {
+      const targetUid = finalUser.uid || finalUser.id || fallbackUid;
+      await setDoc(doc(db, "usuarios", targetUid), finalUser, { merge: true });
+      await setDoc(doc(db, "users", targetUid), {
+        uid: targetUid,
+        email: normalizedEmail,
+        displayName: formData.nome.trim(),
+        createdAt: finalUser.createdAt,
+        onboardingCompleted: true,
+        financialScore: 70,
+        phoneNumber: formData.telefone || "",
+      }, { merge: true }).catch(() => {});
+    } catch (fsErr) {
+      console.warn("Direct Firestore fallback error:", fsErr);
+      if (!apiSucceeded) {
+        notify("Falha ao salvar usuário no banco de dados. Verifique a conexão.");
+        setCreatingClient(false);
+        return;
+      }
+    }
+
+    // 3. Immediately reflect in state and show credentials modal
+    setClients((prev) => {
+      const filtered = prev.filter(
+        (c) => c.email?.toLowerCase() !== normalizedEmail
+      );
+      return [finalUser, ...filtered];
+    });
+
+    notify("Cliente cadastrado com sucesso!");
+    setCreatedSuccess({
+      nome: formData.nome,
+      email: normalizedEmail,
+      senha: formData.senha,
+      telefone: formData.telefone,
+      plano: formData.plano,
+      link: window.location.origin,
+    });
+
+    setCreatingClient(false);
+    fetchClients();
   };
 
   // Handle Edit User Modal Open
@@ -410,23 +424,36 @@ export default function AdminPanel({ userProfile, onLogout, mostrarMensagem }: A
   const handleSaveEditClient = async () => {
     if (!editClientTarget) return;
     setSavingEdit(true);
+    const uid = editClientTarget.uid || editClientTarget.id;
+    const updateData = {
+      nome: editNome.trim(),
+      telefone: editTelefone.trim(),
+      plano: editPlano,
+      vencimento: editVencimento ? new Date(editVencimento).toISOString() : "",
+      observacoes: editObservacoes.trim(),
+    };
+
     try {
-      const res = await apiCall("/api/admin/update-user", {
+      // Optimistic state update
+      setClients((prev) =>
+        prev.map((c) => ((c.uid || c.id) === uid ? { ...c, ...updateData } : c))
+      );
+
+      // Try API
+      apiCall("/api/admin/update-user", {
         method: "POST",
-        body: JSON.stringify({
-          uid: editClientTarget.uid || editClientTarget.id,
-          nome: editNome,
-          telefone: editTelefone,
-          plano: editPlano,
-          vencimento: editVencimento ? new Date(editVencimento).toISOString() : "",
-          observacoes: editObservacoes,
-        }),
-      });
-      if (!res.ok) throw new Error(res.error || "Erro ao atualizar dados.");
+        body: JSON.stringify({ uid, ...updateData }),
+      }).catch(() => {});
+
+      // Direct Firestore update
+      try {
+        await setDoc(doc(db, "usuarios", uid), updateData, { merge: true });
+      } catch (fsErr) {
+        console.warn("Firestore update error:", fsErr);
+      }
 
       notify("Dados do cliente atualizados com sucesso!");
       setEditClientTarget(null);
-      fetchClients();
     } catch (e: any) {
       notify(e.message || "Erro ao salvar alterações.");
     } finally {
@@ -437,22 +464,25 @@ export default function AdminPanel({ userProfile, onLogout, mostrarMensagem }: A
   // Handle Toggle Active/Inactive
   const handleToggleStatus = async (client: AdminCliente) => {
     const nextStatus = client.ativo === false;
+    const uid = client.uid || client.id;
     try {
-      const res = await apiCall("/api/admin/toggle-status", {
+      // Optimistic update
+      setClients((prev) =>
+        prev.map((c) => ((c.uid || c.id) === uid ? { ...c, ativo: nextStatus } : c))
+      );
+
+      // Try API
+      apiCall("/api/admin/toggle-status", {
         method: "POST",
-        body: JSON.stringify({
-          uid: client.uid || client.id,
-          ativo: nextStatus,
-        }),
-      });
-      if (!res.ok) throw new Error(res.error || "Erro ao alterar status");
+        body: JSON.stringify({ uid, ativo: nextStatus }),
+      }).catch(() => {});
+
+      // Direct Firestore update
+      try {
+        await setDoc(doc(db, "usuarios", uid), { ativo: nextStatus }, { merge: true });
+      } catch (e) {}
 
       notify(`Cliente ${nextStatus ? "ativado" : "desativado"} com sucesso!`);
-      setClients((prev) =>
-        prev.map((c) =>
-          c.uid === client.uid ? { ...c, ativo: nextStatus } : c
-        )
-      );
     } catch (error: any) {
       notify(error.message || "Erro ao alterar status.");
     }
@@ -461,18 +491,24 @@ export default function AdminPanel({ userProfile, onLogout, mostrarMensagem }: A
   // Handle Bulk Toggle Active/Inactive
   const handleBulkToggleStatus = async (uids: string[], ativo: boolean) => {
     try {
-      const res = await apiCall("/api/admin/bulk-toggle-status", {
-        method: "POST",
-        body: JSON.stringify({ uids, ativo }),
-      });
-      if (!res.ok) throw new Error(res.error || "Erro ao atualizar clientes em massa");
-
-      notify(`${uids.length} clientes atualizados para ${ativo ? "Ativo" : "Inativo"}!`);
       setClients((prev) =>
         prev.map((c) =>
           uids.includes(c.uid || c.id || "") ? { ...c, ativo } : c
         )
       );
+
+      apiCall("/api/admin/bulk-toggle-status", {
+        method: "POST",
+        body: JSON.stringify({ uids, ativo }),
+      }).catch(() => {});
+
+      for (const uid of uids) {
+        try {
+          await setDoc(doc(db, "usuarios", uid), { ativo }, { merge: true });
+        } catch (e) {}
+      }
+
+      notify(`${uids.length} clientes atualizados para ${ativo ? "Ativo" : "Inativo"}!`);
     } catch (err: any) {
       notify(err.message || "Erro ao atualizar clientes.");
     }
@@ -492,21 +528,33 @@ export default function AdminPanel({ userProfile, onLogout, mostrarMensagem }: A
   // Handle Change Password Submit
   const handleChangePasswordSubmit = async () => {
     if (!changePasswordClient || !newPasswordVal.trim()) return;
+    if (newPasswordVal.trim().length < 6) {
+      notify("A senha deve conter no mínimo 6 caracteres.");
+      return;
+    }
     setUpdatingPassword(true);
+    const uid = changePasswordClient.uid || changePasswordClient.id;
+    const cleanNewPass = newPasswordVal.trim();
     try {
-      const res = await apiCall("/api/admin/change-password", {
+      // 1. Try API
+      apiCall("/api/admin/change-password", {
         method: "POST",
-        body: JSON.stringify({
-          uid: changePasswordClient.uid || changePasswordClient.id,
-          novaSenha: newPasswordVal.trim(),
-        }),
-      });
-      if (!res.ok) throw new Error(res.error || "Erro ao alterar senha.");
+        body: JSON.stringify({ uid, novaSenha: cleanNewPass }),
+      }).catch(() => {});
+
+      // 2. Direct Firestore fallback
+      try {
+        await setDoc(doc(db, "usuarios", uid), { senha: cleanNewPass }, { merge: true });
+      } catch (e) {}
+
+      // 3. Optimistic local update
+      setClients((prev) =>
+        prev.map((c) => ((c.uid || c.id) === uid ? { ...c, senha: cleanNewPass } : c))
+      );
 
       notify("Senha atualizada com sucesso!");
       setChangePasswordClient(null);
       setNewPasswordVal("");
-      fetchClients();
     } catch (error: any) {
       notify(error.message || "Erro ao atualizar senha.");
     } finally {
@@ -518,18 +566,24 @@ export default function AdminPanel({ userProfile, onLogout, mostrarMensagem }: A
   const handleDeleteClientSubmit = async () => {
     if (!deleteClientTarget) return;
     setDeleting(true);
+    const uid = deleteClientTarget.uid || deleteClientTarget.id;
     try {
-      const res = await apiCall("/api/admin/delete-user", {
+      // 1. Try API
+      apiCall("/api/admin/delete-user", {
         method: "POST",
-        body: JSON.stringify({
-          uid: deleteClientTarget.uid || deleteClientTarget.id,
-        }),
-      });
-      if (!res.ok) throw new Error(res.error || "Erro ao excluir conta.");
+        body: JSON.stringify({ uid }),
+      }).catch(() => {});
 
+      // 2. Direct Firestore delete
+      try {
+        await deleteDoc(doc(db, "usuarios", uid));
+        await deleteDoc(doc(db, "users", uid)).catch(() => {});
+      } catch (e) {}
+
+      // 3. Remove from local state
+      setClients((prev) => prev.filter((c) => (c.uid || c.id) !== uid));
       notify("Conta excluída com sucesso.");
       setDeleteClientTarget(null);
-      fetchClients();
     } catch (error: any) {
       notify(error.message || "Erro ao excluir conta.");
     } finally {

@@ -1,7 +1,6 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
-import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import * as firebaseAdminModule from "firebase-admin";
@@ -169,6 +168,28 @@ if (!getApps().length) {
 }
 
 export const app = express();
+
+// Enable CORS for all environments
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, x-user-email, x-admin-email, authorization-email");
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+  next();
+});
+
+// Normalize Vercel Serverless Function rewritten URLs for /api/* only
+app.use((req, res, next) => {
+  const queryWildcard = (req.query['0'] as string) || (req.query['path'] as string) || (req.query['__path'] as string);
+  if (queryWildcard && typeof queryWildcard === "string") {
+    const clean = queryWildcard.startsWith("/") ? queryWildcard : "/" + queryWildcard;
+    req.url = clean.startsWith("/api") ? clean : `/api${clean}`;
+  }
+  next();
+});
+
 app.use(express.json({ limit: "20mb" }));
 
   // Middleware to verify Admin Authorization
@@ -392,7 +413,9 @@ app.use(express.json({ limit: "20mb" }));
     }
   };
 
-  initAdminAccount();
+  if (!process.env.VERCEL && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
+    initAdminAccount();
+  }
 
   // 1. Create User in Firebase Auth and Firestore usuarios/{uid}
   app.post("/api/admin/create-user", verifyAdmin, async (req, res) => {
@@ -1265,7 +1288,7 @@ app.use(express.json({ limit: "20mb" }));
 export default app;
 
 async function startServer() {
-  if (process.env.VERCEL) {
+  if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
     return;
   }
 
@@ -1273,17 +1296,24 @@ async function startServer() {
 
   // Vite middleware for development vs static serve for production
   if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
+    try {
+      const { createServer: createViteServer } = await import("vite");
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: "spa",
+      });
+      app.use(vite.middlewares);
+    } catch (viteErr) {
+      console.warn("Vite middleware init notice:", viteErr);
+    }
   } else {
     const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
+    if (fs.existsSync(distPath)) {
+      app.use(express.static(distPath));
+      app.get("*", (req, res) => {
+        res.sendFile(path.join(distPath, "index.html"));
+      });
+    }
   }
 
   app.listen(PORT, "0.0.0.0", () => {
@@ -1291,7 +1321,14 @@ async function startServer() {
   });
 }
 
-if (!process.env.VERCEL) {
-  startServer();
+if (!process.env.VERCEL && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
+  const isDirectRun = process.argv[1] && (
+    process.argv[1].endsWith("server.ts") ||
+    process.argv[1].endsWith("server.cjs") ||
+    process.argv[1].includes("tsx")
+  );
+  if (isDirectRun) {
+    startServer().catch(err => console.error("Start server error:", err));
+  }
 }
 
