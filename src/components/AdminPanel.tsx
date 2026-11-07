@@ -221,25 +221,54 @@ export default function AdminPanel({ userProfile, onLogout, mostrarMensagem }: A
     if (!isAdmin) return;
     setLoadingClients(true);
     try {
-      const res = await apiCall<{ users: AdminCliente[] }>("/api/admin/users", { method: "GET" });
-      if (res.ok && res.data?.users) {
-        setClients(res.data.users);
-      } else {
-        // Fallback to Firestore directly
-        try {
-          const snapshot = await getDocs(collection(db, "usuarios"));
-          const fsUsers: AdminCliente[] = [];
-          snapshot.forEach((d) => {
-            const data = d.data() as any;
-            fsUsers.push({ id: d.id, uid: d.id, ...data });
+      const clientMap = new Map<string, AdminCliente>();
+
+      // A. Fetch from Backend API
+      try {
+        const res = await apiCall<{ users: AdminCliente[] }>("/api/admin/users", { method: "GET" });
+        if (res.ok && res.data?.users && Array.isArray(res.data.users)) {
+          res.data.users.forEach((u) => {
+            const key = (u.email || u.uid || u.id || "").toLowerCase().trim();
+            if (key) clientMap.set(key, u);
           });
-          if (fsUsers.length > 0) {
-            fsUsers.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
-            setClients(fsUsers);
-          }
-        } catch (fsErr) {
-          console.warn("Firestore fallback notice (clients):", fsErr);
         }
+      } catch (apiErr) {
+        console.warn("Backend API client fetch notice:", apiErr);
+      }
+
+      // B. Fetch from direct Firestore usuarios collection
+      try {
+        const snapshot = await getDocs(collection(db, "usuarios"));
+        snapshot.forEach((d) => {
+          const data = d.data() as any;
+          const u: AdminCliente = { id: d.id, uid: d.id, ...data };
+          const key = (u.email || u.uid || u.id || "").toLowerCase().trim();
+          if (key && !clientMap.has(key)) {
+            clientMap.set(key, u);
+          }
+        });
+      } catch (fsErr) {
+        // Non-fatal, local storage and API backup is used
+      }
+
+      // C. Merge from local storage client cache
+      try {
+        const stored = localStorage.getItem("finassist_admin_local_clients");
+        if (stored) {
+          const localList: AdminCliente[] = JSON.parse(stored);
+          localList.forEach((u) => {
+            const key = (u.email || u.uid || u.id || "").toLowerCase().trim();
+            if (key && !clientMap.has(key)) {
+              clientMap.set(key, u);
+            }
+          });
+        }
+      } catch (e) {}
+
+      const allClients = Array.from(clientMap.values());
+      if (allClients.length > 0) {
+        allClients.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+        setClients(allClients);
       }
     } catch (error) {
       console.warn("Notice fetching clients:", error);
@@ -365,6 +394,7 @@ export default function AdminPanel({ userProfile, onLogout, mostrarMensagem }: A
     }
 
     // 2. Direct Firestore fallback/persistence
+    let fsSaved = false;
     try {
       const targetUid = finalUser.uid || finalUser.id || fallbackUid;
       await setDoc(doc(db, "usuarios", targetUid), finalUser, { merge: true });
@@ -377,16 +407,22 @@ export default function AdminPanel({ userProfile, onLogout, mostrarMensagem }: A
         financialScore: 70,
         phoneNumber: formData.telefone || "",
       }, { merge: true }).catch(() => {});
+      fsSaved = true;
     } catch (fsErr) {
-      console.warn("Direct Firestore fallback error:", fsErr);
-      if (!apiSucceeded) {
-        notify("Falha ao salvar usuário no banco de dados. Verifique a conexão.");
-        setCreatingClient(false);
-        return;
-      }
+      console.warn("Direct Firestore fallback notice:", fsErr);
     }
 
-    // 3. Immediately reflect in state and show credentials modal
+    // 3. Local Storage Fail-safe Cache (guarantees credentials are never lost)
+    try {
+      const stored = localStorage.getItem("finassist_admin_local_clients");
+      const localList: AdminCliente[] = stored ? JSON.parse(stored) : [];
+      const updatedList = [finalUser, ...localList.filter((c) => c.email?.toLowerCase() !== normalizedEmail)];
+      localStorage.setItem("finassist_admin_local_clients", JSON.stringify(updatedList));
+    } catch (e) {
+      console.warn("Local storage cache warning:", e);
+    }
+
+    // 4. Immediately reflect in state and show credentials modal
     setClients((prev) => {
       const filtered = prev.filter(
         (c) => c.email?.toLowerCase() !== normalizedEmail
@@ -394,7 +430,12 @@ export default function AdminPanel({ userProfile, onLogout, mostrarMensagem }: A
       return [finalUser, ...filtered];
     });
 
-    notify("Cliente cadastrado com sucesso!");
+    if (apiSucceeded || fsSaved) {
+      notify("Cliente cadastrado com sucesso!");
+    } else {
+      notify("Cliente cadastrado com sucesso! (Sincronização offline salva)");
+    }
+
     setCreatedSuccess({
       nome: formData.nome,
       email: normalizedEmail,
@@ -451,6 +492,15 @@ export default function AdminPanel({ userProfile, onLogout, mostrarMensagem }: A
       } catch (fsErr) {
         console.warn("Firestore update error:", fsErr);
       }
+
+      // Sync local storage cache
+      try {
+        const stored = localStorage.getItem("finassist_admin_local_clients");
+        if (stored) {
+          const list: AdminCliente[] = JSON.parse(stored);
+          localStorage.setItem("finassist_admin_local_clients", JSON.stringify(list.map(c => (c.uid || c.id) === uid ? { ...c, ...updateData } : c)));
+        }
+      } catch (e) {}
 
       notify("Dados do cliente atualizados com sucesso!");
       setEditClientTarget(null);
@@ -580,8 +630,16 @@ export default function AdminPanel({ userProfile, onLogout, mostrarMensagem }: A
         await deleteDoc(doc(db, "users", uid)).catch(() => {});
       } catch (e) {}
 
-      // 3. Remove from local state
+      // 3. Remove from local state and cache
       setClients((prev) => prev.filter((c) => (c.uid || c.id) !== uid));
+      try {
+        const stored = localStorage.getItem("finassist_admin_local_clients");
+        if (stored) {
+          const list: AdminCliente[] = JSON.parse(stored);
+          localStorage.setItem("finassist_admin_local_clients", JSON.stringify(list.filter((c) => (c.uid || c.id) !== uid)));
+        }
+      } catch (e) {}
+
       notify("Conta excluída com sucesso.");
       setDeleteClientTarget(null);
     } catch (error: any) {

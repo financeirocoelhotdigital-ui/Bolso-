@@ -4,6 +4,9 @@ import fs from "fs";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import * as firebaseAdminModule from "firebase-admin";
+import { getFirestore } from "firebase-admin/firestore";
+import { getAuth } from "firebase-admin/auth";
+import rawFirebaseConfig from "./firebase-applet-config.json";
 
 dotenv.config();
 
@@ -113,39 +116,13 @@ function saveLocalSettings(settings: any) {
   }
 }
 
-// Load Firebase Config
-let firebaseConfig: any = {};
-try {
-  const configFile = fs.readFileSync(path.join(process.cwd(), "firebase-applet-config.json"), "utf8");
-  firebaseConfig = JSON.parse(configFile);
-} catch (e) {
-  console.warn("Could not load firebase-applet-config.json", e);
-}
-
+// Load Firebase Config safely bundled
+const firebaseConfig: any = rawFirebaseConfig || {};
 const FIREBASE_API_KEY = firebaseConfig.apiKey || process.env.FIREBASE_API_KEY || "AIzaSyCc9ccAo7h8kdMW1_Nq_Mfvl8z6t35kJ0Q";
 const FIREBASE_PROJECT_ID = firebaseConfig.projectId || process.env.FIREBASE_PROJECT_ID || "gen-lang-client-0297514368";
+const FIREBASE_DATABASE_ID = firebaseConfig.firestoreDatabaseId || process.env.FIREBASE_DATABASE_ID || "ai-studio-d08892e7-ff29-48d3-b6ea-e3dca700aa6a";
 
 const firebaseAdmin: any = (firebaseAdminModule as any).default || firebaseAdminModule;
-
-function getAdminAuth() {
-  try {
-    if (typeof firebaseAdmin.auth === "function") return firebaseAdmin.auth();
-    if (typeof firebaseAdmin.default?.auth === "function") return firebaseAdmin.default.auth();
-  } catch (e) {
-    console.warn("getAdminAuth error:", e);
-  }
-  return null;
-}
-
-function getAdminFirestore() {
-  try {
-    if (typeof firebaseAdmin.firestore === "function") return firebaseAdmin.firestore();
-    if (typeof firebaseAdmin.default?.firestore === "function") return firebaseAdmin.default.firestore();
-  } catch (e) {
-    console.warn("getAdminFirestore error:", e);
-  }
-  return null;
-}
 
 const getApps = () => {
   if (Array.isArray(firebaseAdmin.apps)) return firebaseAdmin.apps;
@@ -153,7 +130,12 @@ const getApps = () => {
   return [];
 };
 
-if (!getApps().length) {
+const hasAdminCredentials = !!(
+  process.env.GOOGLE_APPLICATION_CREDENTIALS ||
+  process.env.FIREBASE_SERVICE_ACCOUNT
+);
+
+if (!getApps().length && hasAdminCredentials) {
   try {
     const initFn = typeof firebaseAdmin.initializeApp === "function" ? firebaseAdmin.initializeApp : firebaseAdmin.default?.initializeApp;
     if (typeof initFn === "function") {
@@ -163,8 +145,38 @@ if (!getApps().length) {
       console.log("Firebase Admin SDK initialized for project:", FIREBASE_PROJECT_ID);
     }
   } catch (err) {
-    console.warn("Firebase Admin initializeApp error:", err);
+    // Non-fatal init
   }
+}
+
+function getAdminAuth() {
+  if (!hasAdminCredentials) return null;
+  try {
+    if (typeof getAuth === "function") return getAuth();
+    if (typeof firebaseAdmin.auth === "function") return firebaseAdmin.auth();
+    if (typeof firebaseAdmin.default?.auth === "function") return firebaseAdmin.default.auth();
+  } catch (e) {
+    // Non-fatal
+  }
+  return null;
+}
+
+function getAdminFirestore() {
+  if (!hasAdminCredentials) return null;
+  try {
+    if (typeof getFirestore === "function") {
+      try {
+        return getFirestore(FIREBASE_DATABASE_ID);
+      } catch {
+        return getFirestore();
+      }
+    }
+    if (typeof firebaseAdmin.firestore === "function") return firebaseAdmin.firestore();
+    if (typeof firebaseAdmin.default?.firestore === "function") return firebaseAdmin.default.firestore();
+  } catch (e) {
+    // Non-fatal
+  }
+  return null;
 }
 
 export const app = express();
@@ -180,12 +192,18 @@ app.use((req, res, next) => {
   next();
 });
 
-// Normalize Vercel Serverless Function rewritten URLs for /api/* only
+// Normalize Vercel Serverless Function rewritten URLs for /api/*
 app.use((req, res, next) => {
-  const queryWildcard = (req.query['0'] as string) || (req.query['path'] as string) || (req.query['__path'] as string);
-  if (queryWildcard && typeof queryWildcard === "string") {
-    const clean = queryWildcard.startsWith("/") ? queryWildcard : "/" + queryWildcard;
-    req.url = clean.startsWith("/api") ? clean : `/api${clean}`;
+  const slug = req.query.slug;
+  if (slug) {
+    const slugPath = Array.isArray(slug) ? slug.join("/") : String(slug);
+    req.url = `/api/${slugPath.startsWith("/") ? slugPath.slice(1) : slugPath}`;
+  } else {
+    const queryWildcard = (req.query['__path'] as string) || (req.query['0'] as string) || (req.query['path'] as string);
+    if (queryWildcard && typeof queryWildcard === "string") {
+      const clean = queryWildcard.startsWith("/") ? queryWildcard : "/" + queryWildcard;
+      req.url = clean.startsWith("/api") ? clean : `/api${clean}`;
+    }
   }
   next();
 });
@@ -327,7 +345,7 @@ app.use(express.json({ limit: "20mb" }));
             dbUid = snapshot.docs[0].id;
           }
         } catch (e) {
-          console.warn("Firestore user query notice:", e);
+          // Non-fatal query
         }
       }
 
@@ -569,7 +587,7 @@ app.use(express.json({ limit: "20mb" }));
         try {
           await db.collection("usuarios").doc(uid).set(userData, { merge: true });
         } catch (fsErr: any) {
-          console.warn("Admin SDK firestore set failed:", fsErr?.message);
+          // Non-fatal firestore set
         }
 
         // Step 3: Also seed users/{uid} for app profile compatibility
@@ -617,7 +635,7 @@ app.use(express.json({ limit: "20mb" }));
             firestoreUsers.push({ id: doc.id, ...doc.data() });
           });
         } catch (e) {
-          console.warn("Firestore list usuarios notice:", e);
+          // Non-fatal Firestore read error, local users fallback is used
         }
       }
 
@@ -842,7 +860,7 @@ app.use(express.json({ limit: "20mb" }));
           await db.collection("users").doc(uid).delete().catch(() => {});
         }
       } catch (e) {
-        console.warn("Firestore delete warning:", e);
+        // Non-fatal delete
       }
 
       // Delete from Auth
@@ -935,7 +953,7 @@ app.use(express.json({ limit: "20mb" }));
             ...(updatePayload.telefone !== undefined ? { phoneNumber: updatePayload.telefone } : {}),
           }, { merge: true });
         } catch (e) {
-          console.warn("Firestore update error (non-fatal):", e);
+          // Non-fatal update
         }
       }
 

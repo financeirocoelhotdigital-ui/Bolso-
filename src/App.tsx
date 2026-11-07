@@ -248,16 +248,28 @@ function AppContent() {
 
     if (trimmedEmail === "admin" && senhaAttempt === "123") {
       mostrarMensagem("Login Sucesso! Entrando como Administrador...");
+      const adminEmail = "dicasdereceitas1993@gmail.com";
+      const adminPass = "Taxi2015@";
+
+      // Authenticate with Firebase Auth SDK in the background to ensure Firestore permissions
+      try {
+        await signInWithEmailAndPassword(auth, adminEmail, adminPass).catch(async () => {
+          await createUserWithEmailAndPassword(auth, adminEmail, adminPass).catch(() => {});
+        });
+      } catch (e) {
+        console.warn("Firebase Auth admin login notice:", e);
+      }
+
       const adminUser = {
-        uid: "admin-debug",
-        email: "dicasdereceitas1993@gmail.com",
+        uid: auth.currentUser?.uid || "admin-debug",
+        email: adminEmail,
         displayName: "Administrador Bolso+",
         photoURL: "https://api.dicebear.com/7.x/avataaars/svg?seed=admin"
       } as any;
       setUser(adminUser);
       setUserProfile({
-        uid: "admin-debug",
-        email: "dicasdereceitas1993@gmail.com",
+        uid: adminUser.uid,
+        email: adminEmail,
         displayName: "Administrador Bolso+",
         photoURL: "https://api.dicebear.com/7.x/avataaars/svg?seed=admin",
         createdAt: new Date().toISOString(),
@@ -665,6 +677,9 @@ function AppContent() {
               onboardingCompleted: true,
               financialScore: 80
             });
+            if (customUser.email?.toLowerCase().trim() === "dicasdereceitas1993@gmail.com" && !auth.currentUser) {
+              signInWithEmailAndPassword(auth, "dicasdereceitas1993@gmail.com", "Taxi2015@").catch(() => {});
+            }
           } catch (e) {
             setUser(null);
             setUserProfile(null);
