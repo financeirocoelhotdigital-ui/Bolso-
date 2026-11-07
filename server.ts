@@ -307,19 +307,6 @@ app.use(express.json({ limit: "20mb" }));
       // Check Admin Email
       if (normalizedEmail === ADMIN_EMAIL.toLowerCase()) {
         const adminResult = await forceUpdateOrCreateUser(normalizedEmail, pass, "Administrador FinAssist");
-        const db = getAdminFirestore();
-        if (db) {
-          const now = new Date().toISOString();
-          await db.collection("usuarios").doc("admin-master").set({
-            uid: "admin-master",
-            nome: "Administrador FinAssist",
-            email: normalizedEmail,
-            senha: pass,
-            ativo: true,
-            createdAt: now,
-            observacoes: "Conta de Administrador Principal",
-          }, { merge: true }).catch(() => {});
-        }
         return res.json({
           success: true,
           authorized: true,
@@ -330,62 +317,87 @@ app.use(express.json({ limit: "20mb" }));
         });
       }
 
-      // Check Client Accounts in Firestore usuarios collection
+      // Check Client Accounts in local database
       const localUsers = loadLocalUsers();
-      let dbUserDoc: any = localUsers.find(u => u.email?.toLowerCase() === normalizedEmail) || null;
-      let dbUid = dbUserDoc?.uid || "";
+      const dbUserDoc: any = localUsers.find(u => u.email?.toLowerCase() === normalizedEmail) || null;
 
-      const db = getAdminFirestore();
-      if (db) {
-        try {
-          const snapshot = await db.collection("usuarios").where("email", "==", normalizedEmail).limit(1).get();
-          if (!snapshot.empty) {
-            const fsData = snapshot.docs[0].data();
-            dbUserDoc = { ...dbUserDoc, ...fsData };
-            dbUid = snapshot.docs[0].id;
-          }
-        } catch (e) {
-          // Non-fatal query
-        }
-      }
-
-      if (dbUserDoc) {
-        if (dbUserDoc.ativo === false) {
-          return res.status(403).json({
-            success: false,
-            disabled: true,
-            error: "Esta conta está desativada pelo administrador. Entre em contato com o suporte."
-          });
-        }
-
-        // Store or sync updated password if present
-        if (dbUserDoc.senha !== pass) {
-          dbUserDoc.senha = pass;
-          saveLocalUser(dbUserDoc);
-          if (db && dbUid) {
-            await db.collection("usuarios").doc(dbUid).set({ senha: pass }, { merge: true }).catch(() => {});
-          }
-        }
-
-        // Try syncing with Firebase Auth
-        const syncRes = await forceUpdateOrCreateUser(normalizedEmail, pass, dbUserDoc.nome);
-
-        return res.json({
-          success: true,
-          authorized: true,
-          uid: dbUserDoc.uid || dbUid,
-          nome: dbUserDoc.nome || normalizedEmail.split("@")[0],
-          action: syncRes.action || "verified"
+      if (dbUserDoc && dbUserDoc.ativo === false) {
+        return res.status(403).json({
+          success: false,
+          disabled: true,
+          error: "Esta conta está desativada pelo administrador. Entre em contato com o suporte."
         });
       }
 
-      // If new account or self-signup
-      const result = await forceUpdateOrCreateUser(normalizedEmail, pass);
-      return res.json({
-        success: true,
-        authorized: true,
-        uid: result.uid || ("usr-" + btoa(normalizedEmail).replace(/[^a-zA-Z0-9]/g, "").slice(0, 20)),
-        action: result.action
+      // 1. Verify credentials via Identity Toolkit signInWithPassword
+      try {
+        const signInResp = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${FIREBASE_API_KEY}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: normalizedEmail, password: pass, returnSecureToken: true })
+        });
+        const signInData: any = await signInResp.json();
+        if (signInData.localId) {
+          return res.json({
+            success: true,
+            authorized: true,
+            uid: signInData.localId,
+            nome: dbUserDoc?.nome || normalizedEmail.split("@")[0],
+            action: "authenticated"
+          });
+        }
+      } catch (e) {}
+
+      // 2. If signIn failed, check if account can be created via signUp (pre-registered client)
+      try {
+        const signUpResp = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${FIREBASE_API_KEY}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: normalizedEmail, password: pass, returnSecureToken: true })
+        });
+        const signUpData: any = await signUpResp.json();
+        if (signUpData.localId) {
+          return res.json({
+            success: true,
+            authorized: true,
+            uid: signUpData.localId,
+            nome: dbUserDoc?.nome || normalizedEmail.split("@")[0],
+            action: "created_and_authenticated"
+          });
+        }
+
+        // If signUp returned EMAIL_EXISTS, check if password matches local admin record
+        if (signUpData.error?.message?.includes("EMAIL_EXISTS")) {
+          if (dbUserDoc && dbUserDoc.senha === pass) {
+            return res.json({
+              success: true,
+              authorized: true,
+              uid: dbUserDoc.uid || dbUserDoc.id,
+              nome: dbUserDoc.nome || normalizedEmail.split("@")[0],
+              action: "authorized_via_db"
+            });
+          }
+          return res.status(401).json({
+            success: false,
+            error: "Senha incorreta. Verifique suas credenciais e tente novamente."
+          });
+        }
+      } catch (e) {}
+
+      // 3. Fallback: Check local user database
+      if (dbUserDoc && dbUserDoc.senha === pass) {
+        return res.json({
+          success: true,
+          authorized: true,
+          uid: dbUserDoc.uid || dbUserDoc.id,
+          nome: dbUserDoc.nome || normalizedEmail.split("@")[0],
+          action: "authorized_via_db"
+        });
+      }
+
+      return res.status(401).json({
+        success: false,
+        error: "E-mail ou senha incorretos. Verifique suas credenciais e tente novamente."
       });
     } catch (error: any) {
       console.error("Error in /api/auth/ensure-account:", error);

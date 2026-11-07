@@ -281,8 +281,46 @@ function AppContent() {
     }
 
     try {
-      // 1. Verify credentials and sync account with server backend
+      const cleanPassword = senhaAttempt.trim();
       mostrarMensagem("Autenticando...");
+
+      // 1. First, attempt standard Firebase Auth SDK sign-in
+      let sdkSuccess = false;
+      if (isSignUp) {
+        try {
+          await createUserWithEmailAndPassword(auth, trimmedEmail, cleanPassword);
+          sdkSuccess = true;
+        } catch (createErr: any) {
+          if (createErr?.code === "auth/email-already-in-use") {
+            try {
+              await signInWithEmailAndPassword(auth, trimmedEmail, cleanPassword);
+              sdkSuccess = true;
+            } catch (e) {}
+          }
+        }
+      } else {
+        try {
+          await signInWithEmailAndPassword(auth, trimmedEmail, cleanPassword);
+          sdkSuccess = true;
+        } catch (signInErr: any) {
+          // If user was pre-registered in admin without a Firebase Auth session yet, create it on the fly
+          if (signInErr?.code === "auth/invalid-credential" || signInErr?.code === "auth/user-not-found") {
+            try {
+              await createUserWithEmailAndPassword(auth, trimmedEmail, cleanPassword);
+              sdkSuccess = true;
+            } catch (createErr: any) {
+              // Email already in use means password was incorrect
+            }
+          }
+        }
+      }
+
+      if (sdkSuccess) {
+        mostrarMensagem("Acesso concedido com sucesso!");
+        return;
+      }
+
+      // 2. Fallback to server verification (/api/auth/ensure-account)
       let isServerAuthorized = false;
       let syncData: any = null;
 
@@ -290,12 +328,12 @@ function AppContent() {
         const syncResp = await fetch("/api/auth/ensure-account", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: trimmedEmail, password: senhaAttempt }),
+          body: JSON.stringify({ email: trimmedEmail, password: cleanPassword }),
         });
         
-        syncData = await syncResp.json();
+        syncData = await syncResp.json().catch(() => null);
 
-        if (!syncResp.ok && syncData?.disabled) {
+        if (syncData?.disabled) {
           mostrarMensagem(syncData.error || "Esta conta está desativada pelo administrador.");
           return;
         }
@@ -304,35 +342,7 @@ function AppContent() {
           isServerAuthorized = true;
         }
       } catch (e) {
-        console.warn("Ensure account sync warning:", e);
-      }
-
-      // 2. Perform authentication with Firebase Auth SDK
-      let sdkSuccess = false;
-      if (isSignUp) {
-        try {
-          await createUserWithEmailAndPassword(auth, trimmedEmail, senhaAttempt);
-          sdkSuccess = true;
-        } catch (createErr: any) {
-          if (createErr?.code === "auth/email-already-in-use") {
-            try {
-              await signInWithEmailAndPassword(auth, trimmedEmail, senhaAttempt);
-              sdkSuccess = true;
-            } catch (e) {}
-          }
-        }
-      } else {
-        try {
-          await signInWithEmailAndPassword(auth, trimmedEmail, senhaAttempt);
-          sdkSuccess = true;
-        } catch (signInErr: any) {
-          console.warn("Firebase Auth SDK login attempt notice:", signInErr?.code);
-        }
-      }
-
-      if (sdkSuccess) {
-        mostrarMensagem("Acesso concedido com sucesso!");
-        return;
+        console.warn("Ensure account sync notice:", e);
       }
 
       // 3. Authorization Fallback: If server verified authorization or admin email
@@ -359,6 +369,16 @@ function AppContent() {
           financialScore: isAdminUser ? 100 : 80
         });
         localStorage.setItem("finassist_custom_user", JSON.stringify(verifiedUser));
+
+        // Background session sync with Firebase Auth
+        signInWithEmailAndPassword(auth, trimmedEmail, cleanPassword).catch(() => {
+          createUserWithEmailAndPassword(auth, trimmedEmail, cleanPassword).catch(() => {});
+        });
+        return;
+      }
+
+      if (syncData?.error) {
+        mostrarMensagem(syncData.error);
         return;
       }
 

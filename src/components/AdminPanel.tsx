@@ -26,7 +26,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate } from "react-router-dom";
-import { auth, db } from "../lib/firebase";
+import { auth, db, firebaseConfig } from "../lib/firebase";
 import { collection, getDocs, doc, getDoc, setDoc, deleteDoc } from "firebase/firestore";
 import AdminDashboard from "./admin/AdminDashboard";
 import AdminClientList from "./admin/AdminClientList";
@@ -377,6 +377,28 @@ export default function AdminPanel({ userProfile, onLogout, mostrarMensagem }: A
 
     let apiSucceeded = false;
     let finalUser: AdminCliente = clientRecord;
+
+    // 0. Direct Firebase Auth Provisioning via Identity Toolkit REST API
+    const cleanPassword = formData.senha.trim();
+    try {
+      const apiKey = firebaseConfig?.apiKey || "AIzaSyCc9ccAo7h8kdMW1_Nq_Mfvl8z6t35kJ0Q";
+      const signUpResp = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${apiKey}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: normalizedEmail,
+          password: cleanPassword,
+          returnSecureToken: true,
+        }),
+      });
+      const signUpData = await signUpResp.json();
+      if (signUpData.localId) {
+        finalUser.uid = signUpData.localId;
+        finalUser.id = signUpData.localId;
+      }
+    } catch (authErr) {
+      console.warn("Direct Firebase Auth provision notice:", authErr);
+    }
 
     // 1. Attempt API server call
     try {

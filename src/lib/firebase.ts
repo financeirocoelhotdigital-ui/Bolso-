@@ -4,7 +4,7 @@ import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager
 import { getStorage } from "firebase/storage";
 import rawConfig from "../../firebase-applet-config.json";
 
-const firebaseConfig = {
+export const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY || (rawConfig as any)?.apiKey || "AIzaSyCc9ccAo7h8kdMW1_Nq_Mfvl8z6t35kJ0Q",
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || (rawConfig as any)?.authDomain || "gen-lang-client-0297514368.firebaseapp.com",
   projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || (rawConfig as any)?.projectId || "gen-lang-client-0297514368",
